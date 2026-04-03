@@ -240,6 +240,7 @@
   </div>
   <div class="transcript-area" id="transcript"></div>
   <div class="status-bar" id="status"></div>
+  <div id="debug" style="background:#1a1a2e;color:#4ade80;font-family:monospace;font-size:11px;padding:8px 12px;max-height:120px;overflow-y:auto;flex-shrink:0;border-top:1px solid #334155;"></div>
   <div class="btn-row">
     <button class="talk-btn" id="btnA">
       <span class="icon">&#127908;</span>
@@ -253,6 +254,15 @@
 </div>
 
 <script>
+// Debug logger — shows what's happening with speech recognition
+function dbg(msg) {
+  const el = document.getElementById('debug');
+  if (!el) return;
+  const t = new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.innerHTML += '<div>' + t + ' ' + msg + '</div>';
+  el.scrollTop = el.scrollHeight;
+}
+
 const LANGUAGES = [
   { code: 'en', name: 'English', speech: 'en-US' },
   { code: 'es', name: 'Spanish', speech: 'es-ES' },
@@ -315,11 +325,15 @@ document.getElementById('startBtn').addEventListener('click', async () => {
 
   // Grant mic permission once (stop tracks immediately — just need the grant)
   if (!micGranted) {
+    dbg('Requesting mic permission...');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
+      const tracks = stream.getTracks();
+      dbg('Mic granted! Tracks: ' + tracks.map(t => t.kind + '/' + t.readyState).join(', '));
+      tracks.forEach(t => t.stop());
       micGranted = true;
     } catch (err) {
+      dbg('Mic DENIED: ' + err.name + ' - ' + err.message);
       alert('Microphone access is required. Please allow it and try again.');
       return;
     }
@@ -352,25 +366,34 @@ let currentTargetLang = null;
 let currentSide = null;
 
 function createRecognition(lang) {
+  dbg('Creating SpeechRecognition, lang=' + lang + ', iOS=' + isIOS);
   const rec = new SpeechRecognition();
   rec.lang = lang;
   rec.interimResults = true;
   rec.maxAlternatives = 1;
-  // iOS Safari doesn't support continuous mode reliably
   rec.continuous = !isIOS;
 
+  rec.onaudiostart = () => dbg('EVENT: audiostart (mic is capturing)');
+  rec.onsoundstart = () => dbg('EVENT: soundstart (sound detected)');
+  rec.onspeechstart = () => dbg('EVENT: speechstart (speech detected!)');
+  rec.onspeechend = () => dbg('EVENT: speechend');
+  rec.onsoundend = () => dbg('EVENT: soundend');
+  rec.onaudioend = () => dbg('EVENT: audioend');
+
   rec.onresult = (e) => {
+    dbg('EVENT: result (index=' + e.resultIndex + ', count=' + e.results.length + ')');
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
-        fullTranscript += e.results[i][0].transcript + ' ';
+        const txt = e.results[i][0].transcript;
+        dbg('FINAL: "' + txt + '" conf=' + e.results[i][0].confidence.toFixed(2));
+        fullTranscript += txt + ' ';
       }
     }
     if (pendingStop) doStop();
   };
 
   rec.onerror = (e) => {
-    console.warn('Speech error:', e.error);
-    const src = currentSourceLang, tgt = currentTargetLang, side = currentSide;
+    dbg('ERROR: ' + e.error + ' (message: ' + (e.message || 'none') + ')');
     cleanup();
     if (e.error === 'not-allowed') {
       setStatus('Mic access denied. Check browser settings.', '');
@@ -382,6 +405,7 @@ function createRecognition(lang) {
   };
 
   rec.onend = () => {
+    dbg('EVENT: end (transcript so far: "' + fullTranscript.trim() + '")');
     const src = currentSourceLang, tgt = currentTargetLang, side = currentSide;
     const wasRecording = isRecording;
     cleanup();
@@ -419,8 +443,9 @@ function startRecording(sourceLang, targetLangObj, side) {
 
   try {
     recognition.start();
+    dbg('recognition.start() called OK');
   } catch(e) {
-    console.error('Failed to start recognition:', e);
+    dbg('recognition.start() THREW: ' + e.name + ' - ' + e.message);
     cleanup();
     setStatus('Speech recognition failed. Try again.', '');
   }
@@ -429,7 +454,8 @@ function startRecording(sourceLang, targetLangObj, side) {
 function doStop() {
   if (!recognition) return;
   pendingStop = false;
-  try { recognition.stop(); } catch(e) {}
+  dbg('Calling recognition.stop()');
+  try { recognition.stop(); } catch(e) { dbg('stop() error: ' + e.message); }
 }
 
 function stopRecording() {
