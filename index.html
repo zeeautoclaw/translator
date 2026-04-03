@@ -374,14 +374,6 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     }
   }
 
-  // Unlock iOS speechSynthesis — must happen in a user gesture
-  if (window.speechSynthesis) {
-    const unlock = new SpeechSynthesisUtterance('');
-    unlock.volume = 0;
-    window.speechSynthesis.speak(unlock);
-    dbg('SpeechSynthesis unlocked');
-  }
-
   document.getElementById('langA').textContent = myLang.name;
   document.getElementById('langB').textContent = targetLang.name;
   document.getElementById('btnALabel').textContent = 'Speak ' + myLang.name;
@@ -563,21 +555,32 @@ async function processTranslation(text, fromLang, toLang, side) {
   }
 }
 
-// --- Text-to-Speech ---
+// --- Text-to-Speech via Google TTS audio (works on iOS without gesture restrictions) ---
+let ttsAudio = null;
 function speak(text, lang) {
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = lang;
-  utter.rate = 0.95;
-  const voices = window.speechSynthesis.getVoices();
-  const match = voices.find(v => v.lang.startsWith(lang.split('-')[0]));
-  if (match) utter.voice = match;
-  window.speechSynthesis.speak(utter);
-}
+  // Stop any playing audio
+  if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
 
-if (window.speechSynthesis) {
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  // Google TTS endpoint — split long text into chunks of 200 chars
+  const langCode = lang.split('-')[0];
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    chunks.push(remaining.substring(0, 200));
+    remaining = remaining.substring(200);
+  }
+
+  let i = 0;
+  function playNext() {
+    if (i >= chunks.length) return;
+    const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' +
+      encodeURIComponent(langCode) + '&q=' + encodeURIComponent(chunks[i]);
+    ttsAudio = new Audio(url);
+    ttsAudio.onended = () => { i++; playNext(); };
+    ttsAudio.onerror = (e) => dbg('TTS audio error: ' + e.type);
+    ttsAudio.play().catch(e => dbg('TTS play error: ' + e.message));
+  }
+  playNext();
 }
 
 // --- UI Helpers ---
