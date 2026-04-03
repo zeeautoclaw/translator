@@ -374,6 +374,14 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     }
   }
 
+  // Unlock iOS speechSynthesis — must happen in a user gesture
+  if (window.speechSynthesis) {
+    const unlock = new SpeechSynthesisUtterance('');
+    unlock.volume = 0;
+    window.speechSynthesis.speak(unlock);
+    dbg('SpeechSynthesis unlocked');
+  }
+
   document.getElementById('langA').textContent = myLang.name;
   document.getElementById('langB').textContent = targetLang.name;
   document.getElementById('btnALabel').textContent = 'Speak ' + myLang.name;
