@@ -396,6 +396,7 @@ let pendingStop = false;
 let recordingStartTime = 0;
 const MIN_RECORD_MS = 1000;
 let fullTranscript = '';
+let interimTranscript = ''; // fallback for iOS which may not send isFinal
 let currentSourceLang = null;
 let currentTargetLang = null;
 let currentSide = null;
@@ -416,13 +417,20 @@ function createRecognition(lang) {
   rec.onaudioend = () => dbg('EVENT: audioend');
 
   rec.onresult = (e) => {
-    dbg('EVENT: result (index=' + e.resultIndex + ', count=' + e.results.length + ')');
+    let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
+      const txt = e.results[i][0].transcript;
       if (e.results[i].isFinal) {
-        const txt = e.results[i][0].transcript;
-        dbg('FINAL: "' + txt + '" conf=' + e.results[i][0].confidence.toFixed(2));
+        dbg('FINAL: "' + txt + '"');
         fullTranscript += txt + ' ';
+      } else {
+        interim += txt;
       }
+    }
+    // Always track latest interim result as fallback (iOS often never sends isFinal)
+    if (interim) {
+      interimTranscript = interim;
+      dbg('INTERIM: "' + interim + '"');
     }
     if (pendingStop) doStop();
   };
@@ -444,12 +452,18 @@ function createRecognition(lang) {
   };
 
   rec.onend = () => {
-    dbg('EVENT: end (transcript so far: "' + fullTranscript.trim() + '")');
+    // Use final transcript, or fall back to interim (iOS often never marks results as final)
+    let text = fullTranscript.trim();
+    if (!text && interimTranscript) {
+      text = interimTranscript.trim();
+      dbg('Using interim fallback: "' + text + '"');
+    }
+    dbg('EVENT: end (text: "' + text + '")');
     const src = currentSourceLang, tgt = currentTargetLang, side = currentSide;
     const wasRecording = isRecording;
     cleanup();
-    const text = fullTranscript.trim();
     fullTranscript = '';
+    interimTranscript = '';
     if (text && src && tgt) {
       processTranslation(text, src, tgt, side);
     } else if (wasRecording) {
@@ -470,6 +484,7 @@ function startRecording(sourceLang, targetLangObj, side) {
   activeBtn = side;
   recordingStartTime = Date.now();
   fullTranscript = '';
+  interimTranscript = '';
   currentSourceLang = sourceLang;
   currentTargetLang = targetLangObj;
   currentSide = side;
