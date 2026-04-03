@@ -476,8 +476,21 @@ function createRecognition(lang) {
 
 function startRecording(sourceLang, targetLangObj, side) {
   if (isRecording || !SpeechRecognition) return;
-  // Stop any TTS that might interfere with mic
-  window.speechSynthesis.cancel();
+  // Stop any playing TTS
+  if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+
+  // Unlock iOS audio on user gesture — play a tiny silent audio
+  if (!window._audioUnlocked) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    window._audioCtx = ctx;
+    window._audioUnlocked = true;
+    dbg('Audio context unlocked');
+  }
 
   isRecording = true;
   pendingStop = false;
