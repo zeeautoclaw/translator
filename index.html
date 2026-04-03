@@ -188,6 +188,7 @@
   }
   .talk-btn .icon { font-size: 28px; }
   .talk-btn .lang-label { font-size: 13px; font-weight: 500; opacity: 0.85; }
+  .talk-btn { -webkit-touch-callout: none; touch-action: none; }
   #btnA {
     background: linear-gradient(135deg, #6366f1, #818cf8);
     color: #fff;
@@ -310,18 +311,6 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   if (myLang.code === targetLang.code) {
     alert('Please select two different languages.');
     return;
-  }
-
-  // Request microphone permission once — keep stream alive so Chrome
-  // doesn't re-prompt on every SpeechRecognition.start() (especially on file://)
-  if (!window._micStream) {
-    try {
-      window._micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Do NOT stop tracks — keeping the stream alive holds the permission grant
-    } catch (err) {
-      alert('Microphone access is required for translation. Please allow microphone access and try again.');
-      return;
-    }
   }
 
   document.getElementById('langA').textContent = myLang.name;
@@ -509,36 +498,38 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
-// Button event handlers (mouse + touch, no mouseleave to avoid premature stop)
+// Button event handlers (mouse + touch)
+// IMPORTANT: Do NOT preventDefault on touchstart — iOS Safari needs the user
+// gesture intact for SpeechRecognition.start() to work. CSS touch-action:none
+// on the buttons handles scroll/zoom prevention instead.
 function setupButton(btnId, sourceFn, targetFn) {
   const btn = document.getElementById(btnId);
-  let usedTouch = false; // prevent mouse events firing after touch
+  let usedTouch = false;
 
   function onDown(e) {
-    e.preventDefault();
     if (e.type === 'touchstart') usedTouch = true;
-    if (e.type === 'mousedown' && usedTouch) return; // skip mouse after touch
-    const src = sourceFn();
-    const tgt = targetFn();
-    startRecording(src, tgt, btnId);
+    if (e.type === 'mousedown' && usedTouch) return;
+    startRecording(sourceFn(), targetFn(), btnId);
   }
 
   function onUp(e) {
-    e.preventDefault();
     if (e.type === 'mouseup' && usedTouch) { usedTouch = false; return; }
     stopRecording();
   }
 
   btn.addEventListener('mousedown', onDown);
   btn.addEventListener('mouseup', onUp);
-  // No mouseleave — it fires too easily and kills recording
-  btn.addEventListener('touchstart', onDown, { passive: false });
+  btn.addEventListener('touchstart', onDown, { passive: true });
   btn.addEventListener('touchend', onUp, { passive: false });
   btn.addEventListener('touchcancel', onUp, { passive: false });
 }
 
 setupButton('btnA', () => myLang, () => targetLang);
 setupButton('btnB', () => targetLang, () => myLang);
+
+// Prevent context menu on long press
+// Stop recording if finger moves off button (iOS)
+document.addEventListener('touchend', () => { if (isRecording) stopRecording(); });
 
 // Prevent context menu on long press
 document.addEventListener('contextmenu', e => {
