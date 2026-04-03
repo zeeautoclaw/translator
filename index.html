@@ -253,16 +253,6 @@
 </div>
 
 <script>
-// Warn if opened from file:// — mic permissions won't persist
-if (location.protocol === 'file:') {
-  document.getElementById('setup').insertAdjacentHTML('afterbegin',
-    '<div style="background:#7c2d12;color:#fed7aa;padding:12px 16px;border-radius:10px;font-size:13px;max-width:340px;text-align:center;margin-bottom:8px;">' +
-    'Opened from file://. Microphone will re-prompt each time.<br>' +
-    '<b>For best experience, double-click <code>start-translator.command</code></b> on your Desktop instead.' +
-    '</div>'
-  );
-}
-
 const LANGUAGES = [
   { code: 'en', name: 'English', speech: 'en-US' },
   { code: 'es', name: 'Spanish', speech: 'es-ES' },
@@ -286,31 +276,53 @@ const LANGUAGES = [
   { code: 'cs', name: 'Czech', speech: 'cs-CZ' },
 ];
 
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
 let myLang = null, targetLang = null;
 let recognition = null;
 let isRecording = false;
 let activeBtn = null;
+let micGranted = false;
 
 // Populate dropdowns
 const myLangSel = document.getElementById('myLang');
 const targetLangSel = document.getElementById('targetLang');
-
-LANGUAGES.forEach((lang, i) => {
-  const o1 = new Option(lang.name, lang.code);
-  const o2 = new Option(lang.name, lang.code);
-  myLangSel.add(o1);
-  targetLangSel.add(o2);
+LANGUAGES.forEach(lang => {
+  myLangSel.add(new Option(lang.name, lang.code));
+  targetLangSel.add(new Option(lang.name, lang.code));
 });
 myLangSel.value = 'en';
 targetLangSel.value = 'es';
 
+// Show warning if Speech Recognition is not supported (e.g. Firefox)
+if (!SpeechRecognition) {
+  document.getElementById('setup').insertAdjacentHTML('afterbegin',
+    '<div style="background:#7c2d12;color:#fed7aa;padding:12px 16px;border-radius:10px;font-size:13px;max-width:340px;text-align:center;margin-bottom:8px;">' +
+    'Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.' +
+    '</div>');
+}
+
 // Setup -> Main transition
+// Request mic permission here so SpeechRecognition has access later
 document.getElementById('startBtn').addEventListener('click', async () => {
   myLang = LANGUAGES.find(l => l.code === myLangSel.value);
   targetLang = LANGUAGES.find(l => l.code === targetLangSel.value);
   if (myLang.code === targetLang.code) {
     alert('Please select two different languages.');
     return;
+  }
+
+  // Grant mic permission once (stop tracks immediately — just need the grant)
+  if (!micGranted) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      micGranted = true;
+    } catch (err) {
+      alert('Microphone access is required. Please allow it and try again.');
+      return;
+    }
   }
 
   document.getElementById('langA').textContent = myLang.name;
@@ -328,24 +340,26 @@ document.getElementById('backBtn').addEventListener('click', () => {
   setStatus('');
 });
 
-// Speech Recognition — single reusable instance to avoid repeated permission prompts
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+// --- Speech Recognition ---
+// Create a FRESH instance each time to avoid iOS Safari bugs with reuse.
+// On HTTPS, mic permission persists so no re-prompting.
 let pendingStop = false;
 let recordingStartTime = 0;
-const MIN_RECORD_MS = 800;
+const MIN_RECORD_MS = 1000;
 let fullTranscript = '';
 let currentSourceLang = null;
 let currentTargetLang = null;
 let currentSide = null;
 
-// Create one instance and reuse it
-if (SpeechRecognition) {
-  recognition = new SpeechRecognition();
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-  recognition.continuous = true;
+function createRecognition(lang) {
+  const rec = new SpeechRecognition();
+  rec.lang = lang;
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+  // iOS Safari doesn't support continuous mode reliably
+  rec.continuous = !isIOS;
 
-  recognition.onresult = (e) => {
+  rec.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
         fullTranscript += e.results[i][0].transcript + ' ';
@@ -354,18 +368,21 @@ if (SpeechRecognition) {
     if (pendingStop) doStop();
   };
 
-  recognition.onerror = (e) => {
+  rec.onerror = (e) => {
     console.warn('Speech error:', e.error);
-    if (e.error !== 'aborted' && e.error !== 'no-speech') {
-      setStatus('Could not recognize speech. Try again.', '');
-    }
+    const src = currentSourceLang, tgt = currentTargetLang, side = currentSide;
     cleanup();
+    if (e.error === 'not-allowed') {
+      setStatus('Mic access denied. Check browser settings.', '');
+    } else if (e.error === 'no-speech') {
+      setStatus('No speech detected. Hold and speak clearly.', '');
+    } else if (e.error !== 'aborted') {
+      setStatus('Error: ' + e.error + '. Try again.', '');
+    }
   };
 
-  recognition.onend = () => {
-    const src = currentSourceLang;
-    const tgt = currentTargetLang;
-    const side = currentSide;
+  rec.onend = () => {
+    const src = currentSourceLang, tgt = currentTargetLang, side = currentSide;
     const wasRecording = isRecording;
     cleanup();
     const text = fullTranscript.trim();
@@ -373,13 +390,18 @@ if (SpeechRecognition) {
     if (text && src && tgt) {
       processTranslation(text, src, tgt, side);
     } else if (wasRecording) {
-      setStatus('No speech detected. Hold button and speak clearly.', '');
+      setStatus('No speech detected. Hold and speak clearly.', '');
     }
   };
+
+  return rec;
 }
 
 function startRecording(sourceLang, targetLangObj, side) {
-  if (isRecording || !recognition) return;
+  if (isRecording || !SpeechRecognition) return;
+  // Stop any TTS that might interfere with mic
+  window.speechSynthesis.cancel();
+
   isRecording = true;
   pendingStop = false;
   activeBtn = side;
@@ -389,18 +411,18 @@ function startRecording(sourceLang, targetLangObj, side) {
   currentTargetLang = targetLangObj;
   currentSide = side;
 
-  const btn = document.getElementById(side);
-  btn.classList.add('active');
+  document.getElementById(side).classList.add('active');
   setStatus('Listening... (release to finish)', 'recording');
 
-  recognition.lang = sourceLang.speech;
+  // Fresh instance each time — avoids iOS reuse bugs
+  recognition = createRecognition(sourceLang.speech);
 
   try {
     recognition.start();
   } catch(e) {
     console.error('Failed to start recognition:', e);
     cleanup();
-    setStatus('Speech recognition unavailable.', '');
+    setStatus('Speech recognition failed. Try again.', '');
   }
 }
 
@@ -430,9 +452,10 @@ function cleanup() {
     document.getElementById(activeBtn).classList.remove('active');
     activeBtn = null;
   }
+  recognition = null;
 }
 
-// Translation via Google Translate (free endpoint, high quality)
+// --- Translation via Google Translate ---
 async function processTranslation(text, fromLang, toLang, side) {
   setStatus('Translating...', 'processing');
   try {
@@ -452,28 +475,24 @@ async function processTranslation(text, fromLang, toLang, side) {
   }
 }
 
-// Text-to-Speech
+// --- Text-to-Speech ---
 function speak(text, lang) {
   window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = lang;
   utter.rate = 0.95;
-
-  // Try to find a matching voice
   const voices = window.speechSynthesis.getVoices();
   const match = voices.find(v => v.lang.startsWith(lang.split('-')[0]));
   if (match) utter.voice = match;
-
   window.speechSynthesis.speak(utter);
 }
 
-// Ensure voices are loaded
 if (window.speechSynthesis) {
   window.speechSynthesis.getVoices();
   window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
 }
 
-// UI Helpers
+// --- UI Helpers ---
 function setStatus(text, cls) {
   const el = document.getElementById('status');
   el.textContent = text;
@@ -498,10 +517,7 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
-// Button event handlers (mouse + touch)
-// IMPORTANT: Do NOT preventDefault on touchstart — iOS Safari needs the user
-// gesture intact for SpeechRecognition.start() to work. CSS touch-action:none
-// on the buttons handles scroll/zoom prevention instead.
+// --- Button event handlers ---
 function setupButton(btnId, sourceFn, targetFn) {
   const btn = document.getElementById(btnId);
   let usedTouch = false;
@@ -514,24 +530,23 @@ function setupButton(btnId, sourceFn, targetFn) {
 
   function onUp(e) {
     if (e.type === 'mouseup' && usedTouch) { usedTouch = false; return; }
-    stopRecording();
+    if (isRecording) stopRecording();
   }
 
   btn.addEventListener('mousedown', onDown);
   btn.addEventListener('mouseup', onUp);
   btn.addEventListener('touchstart', onDown, { passive: true });
-  btn.addEventListener('touchend', onUp, { passive: false });
-  btn.addEventListener('touchcancel', onUp, { passive: false });
+  btn.addEventListener('touchend', onUp, { passive: true });
+  btn.addEventListener('touchcancel', onUp, { passive: true });
 }
 
 setupButton('btnA', () => myLang, () => targetLang);
 setupButton('btnB', () => targetLang, () => myLang);
 
-// Prevent context menu on long press
-// Stop recording if finger moves off button (iOS)
+// Stop recording if touch ends anywhere (finger slid off button)
 document.addEventListener('touchend', () => { if (isRecording) stopRecording(); });
 
-// Prevent context menu on long press
+// Prevent context menu on long press mobile
 document.addEventListener('contextmenu', e => {
   if (e.target.closest('.talk-btn')) e.preventDefault();
 });
