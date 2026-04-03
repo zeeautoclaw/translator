@@ -339,6 +339,41 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     }
   }
 
+  // On iOS, also test Speech Recognition permission (separate from mic)
+  if (isIOS && SpeechRecognition && !window._speechPermOk) {
+    dbg('Testing iOS Speech Recognition permission...');
+    try {
+      await new Promise((resolve, reject) => {
+        const testRec = new SpeechRecognition();
+        testRec.lang = 'en-US';
+        testRec.continuous = false;
+        testRec.interimResults = false;
+        const timeout = setTimeout(() => { testRec.abort(); resolve(); }, 2000);
+        testRec.onaudiostart = () => {
+          dbg('iOS Speech Recognition permission OK!');
+          window._speechPermOk = true;
+          clearTimeout(timeout);
+          testRec.abort();
+          resolve();
+        };
+        testRec.onerror = (e) => {
+          clearTimeout(timeout);
+          dbg('iOS Speech Recognition error: ' + e.error);
+          if (e.error === 'service-not-allowed' || e.error === 'not-allowed') {
+            reject(e.error);
+          } else {
+            resolve(); // other errors are OK (e.g. no-speech)
+          }
+        };
+        testRec.onend = () => { clearTimeout(timeout); resolve(); };
+        testRec.start();
+      });
+    } catch (err) {
+      alert('Speech Recognition permission is required.\n\nOn iPhone, go to:\nSettings > Safari > Microphone > Allow\n\nAlso check:\nSettings > Privacy & Security > Speech Recognition > Safari > Allow\n\nThen try again.');
+      return;
+    }
+  }
+
   document.getElementById('langA').textContent = myLang.name;
   document.getElementById('langB').textContent = targetLang.name;
   document.getElementById('btnALabel').textContent = 'Speak ' + myLang.name;
@@ -395,8 +430,12 @@ function createRecognition(lang) {
   rec.onerror = (e) => {
     dbg('ERROR: ' + e.error + ' (message: ' + (e.message || 'none') + ')');
     cleanup();
-    if (e.error === 'not-allowed') {
-      setStatus('Mic access denied. Check browser settings.', '');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      if (isIOS) {
+        setStatus('Enable Speech Recognition in iPhone Settings > Safari.', '');
+      } else {
+        setStatus('Mic access denied. Check browser settings.', '');
+      }
     } else if (e.error === 'no-speech') {
       setStatus('No speech detected. Hold and speak clearly.', '');
     } else if (e.error !== 'aborted') {
