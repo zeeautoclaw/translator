@@ -479,17 +479,12 @@ function startRecording(sourceLang, targetLangObj, side) {
   // Stop any playing TTS
   if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
 
-  // Unlock iOS audio on user gesture — play a tiny silent audio
-  if (!window._audioUnlocked) {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = ctx.createBuffer(1, 1, 22050);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start(0);
-    window._audioCtx = ctx;
-    window._audioUnlocked = true;
-    dbg('Audio context unlocked');
+  // iOS: Pre-create and unlock an Audio element on user gesture.
+  // We play a silent data URI so iOS marks this element as "user-activated".
+  // We then reuse this exact element for TTS after translation completes.
+  if (!window._unlockedAudio) {
+    window._unlockedAudio = new Audio('data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAwAAAbAAqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV////////////////////////////////////////////AAAAAExhdmM1OC4xMwAAAAAAAAAAAAAAACQAAAAAAAAAAaC2SMZIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/+M4wAAOaAFkCAAAAgAANIAAAARMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV');
+    window._unlockedAudio.play().then(() => dbg('iOS audio unlocked via user gesture')).catch(e => dbg('Audio unlock failed: ' + e.message));
   }
 
   isRecording = true;
@@ -568,32 +563,46 @@ async function processTranslation(text, fromLang, toLang, side) {
   }
 }
 
-// --- Text-to-Speech via Google TTS audio (works on iOS without gesture restrictions) ---
+// --- Text-to-Speech via Google TTS ---
+// Reuses the unlocked Audio element from the button press gesture (critical for iOS)
 let ttsAudio = null;
-function speak(text, lang) {
-  // Stop any playing audio
-  if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+let ttsQueue = [];
+let ttsPlaying = false;
 
-  // Google TTS endpoint — split long text into chunks of 200 chars
+function speak(text, lang) {
   const langCode = lang.split('-')[0];
-  const chunks = [];
+  // Split long text into chunks of 200 chars
+  ttsQueue = [];
   let remaining = text;
   while (remaining.length > 0) {
-    chunks.push(remaining.substring(0, 200));
+    ttsQueue.push(remaining.substring(0, 200));
     remaining = remaining.substring(200);
   }
+  ttsPlaying = true;
+  playNextChunk(langCode);
+}
 
-  let i = 0;
-  function playNext() {
-    if (i >= chunks.length) return;
-    const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' +
-      encodeURIComponent(langCode) + '&q=' + encodeURIComponent(chunks[i]);
-    ttsAudio = new Audio(url);
-    ttsAudio.onended = () => { i++; playNext(); };
-    ttsAudio.onerror = (e) => dbg('TTS audio error: ' + e.type);
-    ttsAudio.play().catch(e => dbg('TTS play error: ' + e.message));
-  }
-  playNext();
+function playNextChunk(langCode) {
+  if (!ttsQueue.length) { ttsPlaying = false; return; }
+  const chunk = ttsQueue.shift();
+  const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' +
+    encodeURIComponent(langCode) + '&q=' + encodeURIComponent(chunk);
+
+  // Reuse the unlocked audio element if available (iOS), otherwise create new
+  const audio = window._unlockedAudio || new Audio();
+  ttsAudio = audio;
+  audio.onended = () => playNextChunk(langCode);
+  audio.onerror = (e) => {
+    dbg('TTS error: ' + e.type + ', trying new Audio');
+    // Fallback: try a fresh Audio element
+    const fallback = new Audio(url);
+    ttsAudio = fallback;
+    fallback.onended = () => playNextChunk(langCode);
+    fallback.onerror = () => dbg('TTS fallback also failed');
+    fallback.play().catch(e2 => dbg('TTS fallback play error: ' + e2.message));
+  };
+  audio.src = url;
+  audio.play().then(() => dbg('TTS playing OK')).catch(e => dbg('TTS play error: ' + e.message));
 }
 
 // --- UI Helpers ---
